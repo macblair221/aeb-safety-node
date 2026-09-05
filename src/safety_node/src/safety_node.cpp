@@ -21,7 +21,6 @@ public:
             std::bind(&SafetyNode::odom_callback, this, _1));
 
         this->declare_parameter("ttc_threshold", 1.0);
-        ttc_threshold_ = this->get_parameter("ttc_threshold").as_double();
 
         scan_sub_ = this->create_subscription<sensor_msgs::msg::LaserScan>(
             "/scan", 10,
@@ -37,13 +36,21 @@ private:
 
     void scan_callback(const sensor_msgs::msg::LaserScan::SharedPtr msg)
     {
+        ttc_threshold_ = this->get_parameter("ttc_threshold").as_double();
+
+        if (odom_received_ && !braking_ &&
+            (this->now() - last_odom_time_).seconds() > 0.5) {
+            braking_ = true;
+            RCLCPP_WARN(this->get_logger(), "BRAKE - odometry stale");
+        }
+
         double min_ttc = std::numeric_limits<double>::infinity();
 
         for (size_t i = 0; i < msg->ranges.size(); i++) {
             double range = msg->ranges[i];
 
-            // Skip readings the sensor couldn't resolve
-            if (!std::isfinite(range)) {
+            if (!std::isfinite(range) ||
+                range < msg->range_min || range > msg->range_max) {
                 continue;
             }
 
@@ -73,6 +80,7 @@ private:
 
         if (braking_) {
             auto drive_msg = ackermann_msgs::msg::AckermannDriveStamped();
+            drive_msg.header.stamp = this->now();
             drive_msg.drive.speed = 0.0;
             drive_pub_->publish(drive_msg);
         }
@@ -82,6 +90,8 @@ private:
     void odom_callback(const nav_msgs::msg::Odometry::SharedPtr msg)
     {
         speed_ = msg->twist.twist.linear.x;
+        last_odom_time_ = this->now();
+        odom_received_ = true;
     }
 
     rclcpp::Subscription<sensor_msgs::msg::LaserScan>::SharedPtr scan_sub_;
@@ -90,6 +100,8 @@ private:
 
     double speed_ = 0.0;
     bool braking_ = false;
+    bool odom_received_ = false;
+    rclcpp::Time last_odom_time_;
     double ttc_threshold_;
 
 };
